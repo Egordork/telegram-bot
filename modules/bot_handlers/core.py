@@ -80,24 +80,24 @@ class BotHandlers:
         ]
 
     def _short_session_label(self, session_name: str) -> str:
-    if not session_name:
-        return "Без названия"
+        if not session_name:
+            return "Без названия"
 
-    if not isinstance(session_name, str):
-        session_name = str(session_name)
+        if not isinstance(session_name, str):
+            session_name = str(session_name)
 
-    name = session_name.strip()
+        name = session_name.strip()
 
-    if name.endswith(".session"):
-        name = name[:-8]
+        if name.endswith(".session"):
+            name = name[:-8]
 
-    if "/" in name:
-        name = name.split("/")[-1]
+        if "/" in name:
+            name = name.split("/")[-1]
 
-    if "\\" in name:
-        name = name.split("\\")[-1]
+        if "\\" in name:
+            name = name.split("\\")[-1]
 
-    return name[:32] if name else "Без названия"
+        return name[:32] if name else "Без названия"
     # ==================== REGISTRATION ====================
     def _register_handlers(self):
         @self.bot.on(events.NewMessage(pattern="/start"))
