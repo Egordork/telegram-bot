@@ -43,6 +43,7 @@ class BotHandlers:
             [Button.inline("📝 Редактирование текста", b"change_text")],
             [Button.inline("👤 Управление аккаунтами", b"menu_accounts")],
             [Button.inline("🚪 Вход в чаты", b"join_chats_menu")],
+            [Button.inline("🔍 Проверка подписки", b"check_sub_menu")],
             [Button.inline("⏱ Настройка тайминга", b"timing_menu")],
             [Button.inline("◀️ Назад", b"back")],
         ]
@@ -262,6 +263,26 @@ class BotHandlers:
             await self._show_manual_chats(event)
         elif data == "show_request_chats":
             await self._show_request_chats(event)
+        elif data == "check_sub_menu":
+            await self._show_check_subscription_menu(event)
+        elif data == "check_sub_choose_account":
+            await self._show_check_sub_accounts_selector(event)
+        elif data.startswith("check_sub_account:"):
+            await self._pick_check_sub_account(event, int(data.split(":", 1)[1]))
+        elif data == "check_sub_choose_lists":
+            await self._show_check_sub_lists_selector(event)
+        elif data.startswith("check_sub_list:"):
+            await self._pick_check_sub_list(event, data.split(":", 1)[1])
+        elif data == "check_sub_start":
+            await self._start_check_subscription(event)
+        elif data == "check_sub_cancel":
+            await self._cancel_check_subscription(event)
+        elif data == "check_sub_show_member":
+            await self._show_check_sub_report_list(event, "member")
+        elif data == "check_sub_show_not_member":
+            await self._show_check_sub_report_list(event, "not_member")
+        elif data == "check_sub_show_errors":
+            await self._show_check_sub_report_list(event, "errors")
         else:
             await event.answer("Функция пока не настроена", alert=True)
 
@@ -1224,6 +1245,280 @@ class BotHandlers:
         username = normalized.split("/")[0]
         entity = await client.get_entity(username)
         await client(JoinChannelRequest(entity))
+
+
+    # ==================== CHECK SUBSCRIPTION ====================
+    async def _show_check_subscription_menu(self, event):
+        sender = await event.get_sender()
+        user_id = sender.id
+        state = self.user_states.setdefault(user_id, {})
+
+        selected_session = state.get("check_sub_session")
+        selected_list = state.get("check_sub_chat_list") or self.chat_manager.get_active_list_name()
+
+        sessions = self.session_manager.get_session_files()
+        chat_list = self.chat_manager.get_chat_list(selected_list) if selected_list else None
+        links_count = len((chat_list or {}).get("links", []))
+
+        state["mode"] = "check_subscription_menu"
+        state["prompt_chat_id"] = event.chat_id
+        state["prompt_message_id"] = event.message_id
+
+        text = (
+            "🔍 Проверка подписки\n\n"
+            f"Аккаунт: {self._short_session_label(selected_session) if selected_session else 'не выбран'}\n"
+            f"База чатов: {selected_list or 'не выбрана'}\n"
+            f"Чатов в базе: {links_count}\n"
+            f"Всего авторизованных аккаунтов: {len(sessions)}\n\n"
+            "Выберите аккаунт и базу чатов, затем нажмите «Начать проверку»."
+        )
+
+        await event.edit(
+            text,
+            buttons=[
+                [Button.inline("👤 Выбрать аккаунт", b"check_sub_choose_account")],
+                [Button.inline("🗂 Выбрать базу чатов", b"check_sub_choose_lists")],
+                [Button.inline("▶️ Начать проверку", b"check_sub_start")],
+                [Button.inline("❌ Отмена", b"check_sub_cancel")],
+            ],
+        )
+
+    async def _show_check_sub_accounts_selector(self, event):
+        sender = await event.get_sender()
+        user_id = sender.id
+        state = self.user_states.setdefault(user_id, {})
+
+        sessions = self.session_manager.get_session_files()
+        if not sessions:
+            await event.edit(
+                "📁 Активных сессий нет.\n\nСначала авторизуйте аккаунт.",
+                buttons=[
+                    [Button.inline("🔑 Авторизация", b"login")],
+                    [Button.inline("◀️ Назад", b"check_sub_menu")],
+                ],
+            )
+            return
+
+        state["check_sub_available_sessions"] = sessions
+        selected = state.get("check_sub_session")
+        buttons = []
+        for idx, session_name in enumerate(sessions):
+            mark = "✅" if session_name == selected else "⬜"
+            buttons.append([Button.inline(f"{mark} {self._short_session_label(session_name)}", f"check_sub_account:{idx}".encode())])
+        buttons.append([Button.inline("◀️ Назад", b"check_sub_menu")])
+
+        await event.edit("👤 Выберите аккаунт для проверки подписки:", buttons=buttons)
+
+    async def _pick_check_sub_account(self, event, index: int):
+        sender = await event.get_sender()
+        user_id = sender.id
+        state = self.user_states.setdefault(user_id, {})
+
+        sessions = state.get("check_sub_available_sessions") or self.session_manager.get_session_files()
+        if index < 0 or index >= len(sessions):
+            await event.answer("Аккаунт не найден", alert=True)
+            return
+
+        state["check_sub_session"] = sessions[index]
+        await self._show_check_subscription_menu(event)
+
+    async def _show_check_sub_lists_selector(self, event):
+        sender = await event.get_sender()
+        user_id = sender.id
+        state = self.user_states.setdefault(user_id, {})
+
+        names = self.chat_manager.get_chat_lists_names()
+        if not names:
+            await event.edit(
+                "🗂 У вас пока нет ни одной базы чатов. Сначала создайте её в разделе «Настройка базы чатов».",
+                buttons=[
+                    [Button.inline("➕ Создать базу", b"chat_lists_create")],
+                    [Button.inline("◀️ Назад", b"check_sub_menu")],
+                ],
+            )
+            return
+
+        selected = state.get("check_sub_chat_list") or self.chat_manager.get_active_list_name()
+        buttons = []
+        for name in names:
+            mark = "✅" if name == selected else "⬜"
+            buttons.append([Button.inline(f"{mark} {name}", f"check_sub_list:{name}".encode())])
+        buttons.append([Button.inline("◀️ Назад", b"check_sub_menu")])
+
+        await event.edit("🗂 Выберите базу чатов для проверки:", buttons=buttons)
+
+    async def _pick_check_sub_list(self, event, name: str):
+        sender = await event.get_sender()
+        user_id = sender.id
+        state = self.user_states.setdefault(user_id, {})
+
+        if not self.chat_manager.get_chat_list(name):
+            await event.answer("База чатов не найдена", alert=True)
+            return
+
+        state["check_sub_chat_list"] = name
+        await self._show_check_subscription_menu(event)
+
+    async def _cancel_check_subscription(self, event):
+        sender = await event.get_sender()
+        user_id = sender.id
+        self._clear_state(user_id)
+        await event.edit("🔍 Проверка подписки отменена.", buttons=self._settings_menu_buttons())
+
+    async def _start_check_subscription(self, event):
+        sender = await event.get_sender()
+        user_id = sender.id
+        state = self.user_states.setdefault(user_id, {})
+
+        session_name = state.get("check_sub_session")
+        list_name = state.get("check_sub_chat_list") or self.chat_manager.get_active_list_name()
+        chat_list = self.chat_manager.get_chat_list(list_name) if list_name else None
+        links = list((chat_list or {}).get("links", []))
+
+        warnings = []
+        if not session_name:
+            warnings.append("• Вы не выбрали аккаунт.")
+        if not list_name:
+            warnings.append("• Вы не выбрали базу чатов.")
+        elif not links:
+            warnings.append("• В выбранной базе нет ссылок.")
+
+        if warnings:
+            await event.edit(
+                "⚠️ Нельзя начать проверку.\n\n" + "\n".join(warnings),
+                buttons=[
+                    [Button.inline("◀️ Вернуться", b"check_sub_menu")],
+                    [Button.inline("❌ Отмена", b"check_sub_cancel")],
+                ],
+            )
+            return
+
+        await event.edit(
+            "⏳ Проверка подписки запускается...",
+            buttons=[[Button.inline("❌ Отмена", b"check_sub_cancel")]],
+        )
+        await self._run_check_subscription(event, user_id, session_name, list_name, links)
+
+    async def _run_check_subscription(self, event, user_id: int, session_name: str, list_name: str, links: List[str]):
+        member = []
+        not_member = []
+        errors = []
+
+        ok, client, display_name = await self.session_manager.open_session_client(session_name)
+        account_label = display_name or self._short_session_label(session_name)
+
+        if not ok or client is None:
+            await event.edit(
+                f"❌ Не удалось открыть аккаунт: {account_label}",
+                buttons=[[Button.inline("◀️ Назад", b"check_sub_menu")]],
+            )
+            return
+
+        total = len(links)
+        try:
+            for idx, link in enumerate(links, start=1):
+                await event.edit(
+                    "🔍 Проверка подписки идёт...\n\n"
+                    f"{idx}/{total} чатов\n"
+                    f"Аккаунт: {account_label}\n"
+                    f"База: {list_name}",
+                    buttons=[[Button.inline("❌ Отмена", b"check_sub_cancel")]],
+                )
+
+                status, reason = await self._check_single_subscription(client, link)
+                if status == "member":
+                    member.append(link)
+                elif status == "not_member":
+                    not_member.append(link)
+                else:
+                    errors.append(f"{link} — {reason}")
+        finally:
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
+
+        self.user_states[user_id] = {
+            "check_sub_report": {
+                "member": member,
+                "not_member": not_member,
+                "errors": errors,
+                "account": account_label,
+                "list": list_name,
+            }
+        }
+
+        await event.edit(
+            "📊 Проверка подписки завершена\n\n"
+            f"Аккаунт: {account_label}\n"
+            f"База: {list_name}\n\n"
+            f"✅ Подписан/состоит: {len(member)}\n"
+            f"❌ Не состоит: {len(not_member)}\n"
+            f"⚠️ Не удалось проверить: {len(errors)}",
+            buttons=[
+                [Button.inline("✅ Где состоит", b"check_sub_show_member")],
+                [Button.inline("❌ Где не состоит", b"check_sub_show_not_member")],
+                [Button.inline("⚠️ Ошибки проверки", b"check_sub_show_errors")],
+                [Button.inline("◀️ Назад", b"menu_settings")],
+            ],
+        )
+
+    async def _check_single_subscription(self, client, target: str):
+        target = str(target).strip()
+        if not target:
+            return "error", "пустая ссылка"
+
+        normalized = target.replace("https://", "").replace("http://", "")
+        if normalized.startswith("t.me/"):
+            normalized = normalized[5:]
+        normalized = normalized.strip("/")
+
+        if normalized.startswith("+") or normalized.startswith("joinchat/"):
+            return "error", "инвайт-ссылка: нельзя проверить без входа в чат"
+
+        try:
+            if target.startswith("@"):
+                entity = await client.get_entity(target)
+            elif normalized.isdigit() or (normalized.startswith("-") and normalized[1:].isdigit()):
+                entity = await client.get_entity(int(normalized))
+            else:
+                username = normalized.split("/")[0]
+                entity = await client.get_entity(username)
+
+            await client.get_permissions(entity, "me")
+            return "member", ""
+        except Exception as e:
+            error = str(e).lower()
+            if any(x in error for x in ["not participant", "usernotparticipant", "not a participant", "forbidden"]):
+                return "not_member", str(e)
+            return "error", str(e)
+
+    async def _show_check_sub_report_list(self, event, category: str):
+        sender = await event.get_sender()
+        user_id = sender.id
+        report = self.user_states.get(user_id, {}).get("check_sub_report", {})
+
+        titles = {
+            "member": "✅ Чаты, где аккаунт состоит",
+            "not_member": "❌ Чаты, где аккаунт не состоит",
+            "errors": "⚠️ Не удалось проверить",
+        }
+
+        items = report.get(category, [])
+        if not items:
+            await event.answer("Список пуст", alert=True)
+            return
+
+        title = titles.get(category, "Список")
+        text = title + ":\n\n" + "\n".join(str(x) for x in items[:100])
+        if len(items) > 100:
+            text += f"\n\n... и ещё {len(items) - 100}"
+
+        await self.bot.send_message(
+            event.chat_id,
+            text,
+            buttons=[[Button.inline("◀️ Назад", b"menu_settings")]],
+        )
 
     # ==================== AUTH / SESSIONS ====================
     async def _start_login(self, event):
