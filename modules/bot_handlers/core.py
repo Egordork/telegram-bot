@@ -1110,6 +1110,14 @@ class BotHandlers:
         overall_fail = 0
         stopped = False
 
+        try:
+            settings = self.timing_settings.load()
+            join_delay = int(settings.get("join_delay", 1) or 1)
+            if join_delay < 0:
+                join_delay = 0
+        except Exception:
+            join_delay = 1
+
         success_chats = []
         request_chats = []
         manual_chats = []
@@ -1167,7 +1175,7 @@ class BotHandlers:
                         else:
                             manual_chats.append(link)
 
-                    await asyncio.sleep(1)
+                    await asyncio.sleep(join_delay)
 
                 if stopped:
                     break
